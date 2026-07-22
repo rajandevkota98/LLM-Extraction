@@ -24,14 +24,21 @@ def decide(
     validation_errors: list[str],
     *,
     model_flagged: Any = None,
+    discarded_expiry: str | None = None,
 ) -> list[str]:
-    """Return every reason this quote needs a human. Empty list means clean."""
+    """Return every reason this quote needs a human. Empty list means clean.
+
+    `discarded_expiry` is the second signal the pipeline passes in alongside
+    `model_flagged`: the expiry the model returned, when normalization could not
+    read it as a calendar date and dropped it. Without it, a dropped value is
+    indistinguishable here from a quote that never stated an expiry at all.
+    """
     reasons: list[str] = []
 
     reasons.extend(_supplier_reasons(payload.get("supplier_name")))
     reasons.extend(_currency_reasons(payload.get("currency")))
     reasons.extend(_item_reasons(payload.get("items")))
-    reasons.extend(_expiry_reasons(payload.get("quote_expiry"), quote_text))
+    reasons.extend(_expiry_reasons(payload.get("quote_expiry"), quote_text, discarded_expiry))
 
     if validation_errors:
         count = len(validation_errors)
@@ -99,14 +106,23 @@ def _item_reasons(value: Any) -> list[str]:
     return reasons
 
 
-def _expiry_reasons(value: Any, quote_text: str) -> list[str]:
-    """Only relative-and-unresolved counts.
+def _expiry_reasons(value: Any, quote_text: str, discarded: str | None = None) -> list[str]:
+    """Only unresolved counts.
 
     A quote with no expiry mentioned at all is not a problem; a quote whose
     expiry we could see but could not safely pin to a date is.
+
+    A discarded value and a relative phrase are usually the same fact seen twice,
+    so the discard wins -- it is the more specific of the two and names the text
+    that was thrown away.
     """
     if isinstance(value, str) and value.strip():
         return []
+    if discarded:
+        return [
+            f"Quote expiry '{discarded}' could not be read as a calendar date and was left "
+            "unset; confirm the expiry by hand."
+        ]
     if has_relative_expiry(quote_text):
         return [
             "Quote expiry is expressed relative to an unknown date and could not be "
