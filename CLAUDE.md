@@ -65,6 +65,10 @@ python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/pre-commit install && .venv/bin/pre-commit run --all-files
 
 .venv/bin/pip install -e ".[api]" && .venv/bin/uvicorn src.api.app:app --reload
+
+docker compose up api                       # API on :8000
+docker compose run --rm cli                 # one-shot pipeline into ./outputs
+LLM_PROVIDER=mock docker compose run --rm cli   # force the offline path
 ```
 
 Code must pass `ruff check` and `ruff format --check` before commit; the
@@ -85,7 +89,10 @@ src/llm/openrouter_adapter.py default real provider, guarded import
 src/llm/anthropic_adapter.py  direct Anthropic, guarded import
 src/llm/call_log.py           llm_calls.jsonl
 src/api/app.py               optional FastAPI wrapper
-tests/                       validator, normalizer, reviewer
+tests/                       validator, normalizer, reviewer, config
+Dockerfile                   multi-stage, non-root, venv-only runtime
+docker-compose.yml           `api` service; `cli` behind a profile
+.github/workflows/ci.yml     ruff + pytest on push and PR
 ```
 
 ## Conventions
@@ -114,6 +121,13 @@ tests/                       validator, normalizer, reviewer
 - Model ids are passed to the provider verbatim, never rewritten. Bad ids are
   rejected up front with a message naming the fix (missing `provider/` prefix,
   or a retired `:nitro` / `:floor` suffix that `OPENROUTER_SORT` now replaces).
+- `.dockerignore` must keep excluding `.env`. Docker does not read `.gitignore`,
+  and a key copied into a layer survives `docker history` even if a later layer
+  removes the file.
+- `[tool.setuptools] py-modules = ["main"]` is load-bearing: listing `packages`
+  explicitly disables auto-discovery, so without it a non-editable install ships
+  no `main` module and the `llm-extraction` console script breaks. Only
+  `pip install -e .` hides that.
 
 ## Do not
 
