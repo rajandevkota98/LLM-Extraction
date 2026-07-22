@@ -1,1 +1,153 @@
-LLM Extraction Exercise
+# Supplier quote extraction
+
+Extracts structured pricing from free-form supplier quote text using an LLM, then
+validates and normalizes the result in deterministic Python.
+
+The model extracts. Code decides.
+
+## Run it
+
+No API key required — the pipeline defaults to an offline mock adapter.
+
+```bash
+python -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+.venv/bin/python main.py --input quotes.json
+```
+
+```
+provider: mock  model: regex-stub-v1
+note: running on the offline mock adapter (no API key required).
+
+  Q-1001  clean         success
+  Q-1002  clean         success
+  Q-1003  NEEDS REVIEW  success
+            - Quote expiry is expressed relative to an unknown date and could not be resolved safely.
+
+3 quote(s): 2 clean, 1 needing review, 0 unparsable.
+```
+
+Exit code is 0 whenever the pipeline ran. Needing review is a normal outcome, not
+a failure. Non-zero means the input was unreadable (2) or the provider could not
+be reached (3).
+
+### With a real model
+
+```bash
+.venv/bin/pip install -e ".[llm]"
+cp .env.example .env          # set ANTHROPIC_API_KEY
+.venv/bin/python main.py --input quotes.json
+```
+
+The provider is chosen in `src/config.py`: it selects Anthropic only when a key is
+actually present, and otherwise falls back to the mock, so a clean checkout always
+runs. `--mock` forces the mock even with a key set.
+
+### Optional HTTP interface
+
+```bash
+.venv/bin/pip install -e ".[api]"
+.venv/bin/uvicorn src.api.app:app --reload
+curl -s localhost:8000/extract -H 'content-type: application/json' \
+  -d '{"id":"Q-1","text":"Acme Ltd. 10 widgets at EUR 4.50 each. Ships in 2 weeks."}'
+```
+
+The CLI is the primary interface; the API is a thin wrapper over the same
+`process_quote` function.
+
+## Output
+
+| Artifact | Contents |
+|---|---|
+| `outputs/{id}.json` | final normalized record |
+| `outputs/{id}_raw.json` | the model's output, verbatim |
+| `review_summary.json` | one entry per quote: `needs_review`, `validation_errors`, `review_reasons` |
+| `llm_calls.jsonl` | one audit record per extraction call |
+
+Every quote produces every artifact, including quotes whose model response could
+not be parsed. Silence is the one outcome an operator cannot act on.
+
+## Pipeline
+
+    LOAD_INPUT -> LLM_EXTRACTION -> SCHEMA_VALIDATION -> NORMALIZATION
+                                 -> REVIEW_DECISION -> RESULTS_WRITTEN
+
+One module per stage under `src/components/`, composed only in `src/pipeline.py`.
+Each stage is a plain function from data to data, so any one is testable without
+a model, a filesystem, or the others.
+
+## Design notes
+
+**The boundary.** The prompt asks only for extraction. It explicitly instructs the
+model *not* to convert `"around 3 weeks"` into a number — that conversion lives in
+`normalizer.py`, where it is deterministic, inspectable and unit-tested. Every
+validation and review rule is ordinary Python. The model's own `needs_review` flag
+is treated as one input signal: it can escalate a quote to review, never clear one.
+
+**Untrusted until proven otherwise.** Model output stays a plain `dict` until it
+has been validated and normalized. Parsing it straight into a strict Pydantic model
+would turn a recoverable data problem into an exception and destroy exactly the
+error detail we are required to report. Validation accumulates a list of errors and
+never raises, so the summary shows every fault rather than the first one.
+
+**Validation runs twice.** Once on the raw payload — the required stage — and again
+after normalization, and it is the second pass that drives the review decision.
+Normalization is the sanctioned repair step: a model returning `"£"` is a schema
+fault before it runs and a resolved `GBP` afterwards. Holding the pre-normalization
+error against the record would flag clean quotes for a problem that no longer
+exists. Faults normalization cannot fix survive both passes and still count.
+
+**Two deliberate refusals.** These are the judgment calls the exercise is really
+about:
+
+- A bare `$` is *not* assumed to be USD. Four currencies use that symbol, so it
+  resolves only when the text also names one outright (`Currency USD`, `CAD`, …),
+  and stays unresolved and flagged otherwise. `€`, `£` and `₹` do resolve, because
+  each belongs to exactly one currency.
+- A relative expiry is *never* resolved against today's date. "Expires next Friday"
+  has no safe answer without the quote's send date, and any date we produced would
+  be fabricated. It is detected, left null, and flagged.
+
+**Failure has a path.** Malformed model output goes through a fallback ladder —
+parse, strip code fences, then isolate the first balanced `{...}` — before being
+recorded as `parse_error`. The balanced-brace step is a counting scan rather than a
+regex, because regular expressions cannot match balanced delimiters and the usual
+`\{.*\}` shortcut breaks on nested objects.
+
+**The mock adapter is honest about what it is.** It is a crude bundle of regexes
+standing where a model would be, not a parser to build on, and it is not keyed to
+the sample quotes. It is deliberately imperfect in the same ways a model is —
+leaving `"3 weeks"` unresolved, reporting a bare `$` — so the deterministic stages
+do real work on every run rather than rubber-stamping pre-cleaned input.
+
+**Known trade-off.** Because the model's uncertainty flag escalates, a quote can be
+marked for review with "the extraction model flagged this quote as uncertain" as its
+only reason, even after normalization resolved the underlying ambiguity. In a
+sourcing workflow, erring toward a two-second human glance beats silently storing a
+value the extractor doubted — but it is a choice, and dropping that rule is a
+one-line change in `reviewer.py`.
+
+## Tests
+
+```bash
+.venv/bin/pytest -q      # 38 tests, no network
+```
+
+Covering the cases a naive implementation gets wrong: `True` passing as a quantity
+because `bool` subclasses `int`; `2026-02-31` passing a regex-only date check; a
+lead-time phrase overwriting a number the model actually read off the page;
+`"valid for 30 days"` being mistaken for a delivery time.
+
+## Development
+
+```bash
+.venv/bin/pip install -e ".[dev]"
+.venv/bin/pre-commit install
+.venv/bin/pre-commit run --all-files
+.venv/bin/ruff check . && .venv/bin/ruff format .
+```
+
+## Scope
+
+No workflow engine, database, retry/backoff, or auth. Six stages, one module each,
+kept to what a 60-minute exercise can carry honestly.
