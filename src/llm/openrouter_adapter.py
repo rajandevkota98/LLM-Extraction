@@ -41,8 +41,7 @@ class OpenRouterAdapter:
 
         if not api_key:
             raise LLMError(
-                "OPENROUTER_API is not set. Add it to .env, or use `--mock` to run "
-                "without a key."
+                "OPENROUTER_API is not set. Add it to .env, or use `--mock` to run without a key."
             )
 
         validate_model_id(model)
@@ -64,6 +63,10 @@ class OpenRouterAdapter:
 
     def complete(self, system: str, user: str) -> str:
         """Return the model's raw text response verbatim."""
+        # Reading the response is inside the try on purpose: OpenRouter fronts many
+        # upstream providers and their response shapes vary, so an unexpected one
+        # has to surface as LLMError rather than as a raw AttributeError escaping
+        # the adapter contract and aborting the whole run.
         try:
             response = self._client.chat.completions.create(
                 model=self.model,
@@ -73,28 +76,43 @@ class OpenRouterAdapter:
                     {"role": "user", "content": user},
                 ],
                 extra_headers=self._headers or None,
+                extra_body=self._extra_body,
             )
+            if not response.choices:
+                # OpenRouter surfaces upstream provider failures this way rather
+                # than as an HTTP error, so an empty choices list is a real outcome.
+                raise LLMError(f"OpenRouter returned no choices for model '{self.model}'.")
+            return response.choices[0].message.content or ""
+        except LLMError:
+            raise
         except Exception as exc:  # noqa: BLE001 - provider SDKs raise a wide variety
             raise LLMError(f"OpenRouter call failed: {exc}") from exc
 
-        if not response.choices:
-            # OpenRouter surfaces upstream provider failures this way rather than
-            # as an HTTP error, so an empty choices list is a real outcome.
-            raise LLMError(f"OpenRouter returned no choices for model '{self.model}'.")
 
-        return response.choices[0].message.content or ""
+# Suffixes OpenRouter no longer publishes as model ids. Routing preference moved
+# to the `provider.sort` field, so these now 404 instead of doing anything.
+RETIRED_VARIANTS = {"nitro": "throughput", "floor": "price"}
 
 
 def validate_model_id(model: str) -> None:
     """Reject a slug that OpenRouter cannot route.
 
-    Ids are always `provider/model`, optionally with a routing variant suffix
-    such as `:nitro` or `:floor`. Catching a bare name here turns a confusing
-    404 from the API into a message that says what to fix.
+    Ids are `provider/model`, optionally with a published variant suffix such as
+    `:free`. Catching a bad id here turns a confusing 404 from the API into a
+    message that says what to fix.
     """
     if "/" not in model:
         raise LLMError(
             f"'{model}' is not a valid OpenRouter model id. Ids are "
             f"'provider/model' (for example 'openai/{model}'). "
             f"Browse the exact slugs at {MODELS_URL}."
+        )
+
+    suffix = model.rsplit(":", 1)[-1] if ":" in model else ""
+    if suffix in RETIRED_VARIANTS:
+        base = model.rsplit(":", 1)[0]
+        raise LLMError(
+            f"'{model}' uses the retired ':{suffix}' suffix, which OpenRouter no "
+            f"longer publishes as a model id. Use '{base}' and set "
+            f"OPENROUTER_SORT={RETIRED_VARIANTS[suffix]} to get the same routing."
         )
