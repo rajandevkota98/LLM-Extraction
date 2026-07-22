@@ -29,6 +29,7 @@ ENV_VARS = (
     "OPENROUTER_BASE_URL",
     "OPENROUTER_SITE_URL",
     "OPENROUTER_APP_NAME",
+    "OPENROUTER_SORT",
 )
 
 
@@ -116,7 +117,21 @@ def test_attribution_headers_are_none_when_unset(monkeypatch):
     settings = Settings.from_env()
     assert settings.site_url is None
     assert settings.app_name is None
+    assert settings.sort is None
     assert settings.base_url == "https://openrouter.ai/api/v1"
+
+
+def test_routing_sort_is_accepted_case_insensitively(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API", "sk-or-test")
+    monkeypatch.setenv("OPENROUTER_SORT", "Throughput")
+    assert Settings.from_env().sort == "throughput"
+
+
+def test_unknown_routing_sort_is_dropped_not_forwarded(monkeypatch):
+    """A bad sort fails the whole request; never lose an extraction over it."""
+    monkeypatch.setenv("OPENROUTER_API", "sk-or-test")
+    monkeypatch.setenv("OPENROUTER_SORT", "fastest-please")
+    assert Settings.from_env().sort is None
 
 
 # --- model id validation --------------------------------------------------- #
@@ -125,10 +140,20 @@ def test_attribution_headers_are_none_when_unset(monkeypatch):
 def test_bare_model_name_is_rejected_with_a_useful_message():
     """OpenRouter ids are provider/model; a bare name 404s confusingly."""
     with pytest.raises(LLMError) as exc:
-        validate_model_id("gpt-oss-120b:nitro")
-    assert "openai/gpt-oss-120b:nitro" in str(exc.value)
+        validate_model_id("gpt-oss-120b")
+    assert "openai/gpt-oss-120b" in str(exc.value)
 
 
-def test_prefixed_model_ids_pass():
-    validate_model_id("openai/gpt-oss-120b:nitro")
+def test_retired_nitro_suffix_is_rejected_with_the_replacement():
+    """`:nitro` is no longer a published id; routing moved to provider.sort."""
+    with pytest.raises(LLMError) as exc:
+        validate_model_id("openai/gpt-oss-120b:nitro")
+    message = str(exc.value)
+    assert "openai/gpt-oss-120b" in message
+    assert "OPENROUTER_SORT=throughput" in message
+
+
+def test_published_model_ids_pass():
+    validate_model_id("openai/gpt-oss-120b")
+    validate_model_id("openai/gpt-oss-20b:free")
     validate_model_id("anthropic/claude-opus-4.8")
