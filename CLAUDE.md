@@ -55,9 +55,10 @@ normalization cannot fix survive both passes and still count.
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 
-.venv/bin/python main.py --input quotes.json   # runs on the mock, no key needed
-.venv/bin/python main.py --mock                # force mock even with a key set
-.venv/bin/python main.py --provider anthropic  # needs ANTHROPIC_API_KEY + [llm] extra
+.venv/bin/python main.py --input quotes.json    # mock unless a key is configured
+.venv/bin/python main.py --mock                 # force mock even with keys set
+.venv/bin/python main.py --provider openrouter  # OPENROUTER_API + [openrouter] extra
+.venv/bin/python main.py --provider anthropic   # ANTHROPIC_API_KEY + [anthropic] extra
 
 .venv/bin/pytest -q
 .venv/bin/ruff check . && .venv/bin/ruff format .
@@ -77,11 +78,12 @@ src/config.py                env-driven Settings; mock is the default
 src/models.py                Pydantic models for every boundary
 src/pipeline.py              stage orchestration
 src/components/              one module per pipeline stage
-src/llm/base.py              LLMAdapter protocol — the provider boundary
-src/llm/prompts.py           the actual prompt text
-src/llm/mock_adapter.py      offline stand-in model
-src/llm/anthropic_adapter.py real provider, guarded import
-src/llm/call_log.py          llm_calls.jsonl
+src/llm/base.py               LLMAdapter protocol — the provider boundary
+src/llm/prompts.py            the actual prompt text
+src/llm/mock_adapter.py       offline stand-in model
+src/llm/openrouter_adapter.py default real provider, guarded import
+src/llm/anthropic_adapter.py  direct Anthropic, guarded import
+src/llm/call_log.py           llm_calls.jsonl
 src/api/app.py               optional FastAPI wrapper
 tests/                       validator, normalizer, reviewer
 ```
@@ -103,8 +105,15 @@ tests/                       validator, normalizer, reviewer
   assumed to be USD (four currencies use it), and a relative expiry is never
   resolved against wall-clock time (the quote's send date is unknown).
 - Tests make no network calls and touch no API keys.
-- Optional dependencies (`fastapi`, `anthropic`) are imported behind guards so
-  the base install always runs.
+- Optional dependencies (`fastapi`, `openai`, `anthropic`) are imported behind
+  guards so the base install always runs.
+- Provider selection is key-driven, not flag-driven: OpenRouter if
+  `OPENROUTER_API` is set, else Anthropic, else mock. A provider requested
+  without its key degrades to the mock rather than crashing — a half-configured
+  `.env` should still produce output to look at.
+- Model ids are passed to the provider verbatim, never rewritten. Bad ids are
+  rejected up front with a message naming the fix (missing `provider/` prefix,
+  or a retired `:nitro` / `:floor` suffix that `OPENROUTER_SORT` now replaces).
 
 ## Do not
 
@@ -120,7 +129,7 @@ tests/                       validator, normalizer, reviewer
 ## Current state
 
 Everything described above is implemented and verified: `main.py` runs
-end-to-end on the mock, 38 tests pass, `ruff check` and `ruff format --check` are
+end-to-end on the mock, 55 tests pass, `ruff check` and `ruff format --check` are
 clean. The three deterministic stages are fully implemented, not stubbed.
 
 `src/llm/mock_adapter.py` is a crude regex stand-in for a model, not a parser to
@@ -129,5 +138,7 @@ a bare `$` through — so the downstream stages do real work on every run. If yo
 extend the pipeline, do not improve the mock to make an output look better; fix
 the deterministic stage that should have handled it.
 
-The `anthropic` path is written but has not been exercised against the live API
-in this environment.
+The OpenRouter path is verified against a local stub server (correct endpoint,
+bearer auth, attribution headers, `provider.sort` body field, system+user
+messages) but has not been run against the live API. The direct `anthropic` path
+is written and untested.
