@@ -38,6 +38,9 @@ class AnthropicAdapter:
 
     def complete(self, system: str, user: str) -> str:
         """Return the model's raw text response verbatim."""
+        # Reading the response is inside the try on purpose: an unexpected content
+        # shape has to surface as LLMError like every other provider failure, not
+        # as a raw AttributeError escaping the adapter contract.
         try:
             message = self._client.messages.create(
                 model=self.model,
@@ -45,7 +48,6 @@ class AnthropicAdapter:
                 system=system,
                 messages=[{"role": "user", "content": user}],
             )
+            return "".join(block.text for block in message.content if block.type == "text")
         except Exception as exc:  # noqa: BLE001 - provider SDKs raise a wide variety
             raise LLMError(f"Anthropic call failed: {exc}") from exc
-
-        return "".join(block.text for block in message.content if block.type == "text")
