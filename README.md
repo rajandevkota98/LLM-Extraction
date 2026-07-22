@@ -151,7 +151,7 @@ one-line change in `reviewer.py`.
 ## Tests
 
 ```bash
-.venv/bin/pytest -q      # 55 tests, no network, no API keys
+.venv/bin/pytest -q      # 89 tests, no network, no API keys
 ```
 
 Covering the cases a naive implementation gets wrong: `True` passing as a quantity
