@@ -28,6 +28,11 @@ llm-extraction = "main:main"
 
 [tool.setuptools]
 packages = ["src", "src.components", "src.llm", "src.api"]
+# Listing `packages` explicitly disables auto-discovery, which would otherwise
+# have picked up `main.py`. Without this a non-editable `pip install .` ships no
+# main module and the console script above dies with ModuleNotFoundError. Only
+# `pip install -e .` hid it, by putting the source tree on the path.
+py-modules = ["main"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
