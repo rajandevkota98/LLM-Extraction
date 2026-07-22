@@ -77,6 +77,35 @@ curl -s localhost:8000/extract -H 'content-type: application/json' \
 The CLI is the primary interface; the API is a thin wrapper over the same
 `process_quote` function.
 
+### Docker
+
+Nothing to install but Docker, and no API key needed — without one the container
+falls back to the same offline mock adapter.
+
+```bash
+docker compose up api                  # HTTP interface on :8000
+docker compose run --rm cli            # one-shot pipeline, writes ./outputs
+```
+
+Force the offline path regardless of what is in `.env`:
+
+```bash
+LLM_PROVIDER=mock docker compose run --rm cli
+```
+
+The `cli` service writes to a bind-mounted `./outputs`, so it runs as uid
+`1000:1000` to keep the files yours rather than root's. If your uid differs:
+
+```bash
+export DOCKER_USER="$(id -u):$(id -g)"
+```
+
+Two details worth knowing. The container steers `review_summary.json` and
+`llm_calls.jsonl` into `outputs/` as well, so a single mount carries every
+artefact. And `.dockerignore` excludes `.env` — Docker does not read
+`.gitignore`, and a key copied into a layer survives `docker history` even if a
+later layer deletes the file.
+
 ## Output
 
 | Artifact | Contents |
@@ -167,6 +196,13 @@ lead-time phrase overwriting a number the model actually read off the page;
 .venv/bin/pre-commit run --all-files
 .venv/bin/ruff check . && .venv/bin/ruff format .
 ```
+
+CI (`.github/workflows/ci.yml`) runs two jobs on every push to `main` and every
+pull request: `ruff check` + `ruff format --check`, and the test suite. Both
+install from the `dev` extra rather than a prebuilt action, so the linter version
+in CI is the one pinned in `pyproject.toml` and cannot drift from pre-commit.
+No secrets are configured — the suite is offline by design, and a job that needed
+a provider to be up would fail for reasons unrelated to the commit.
 
 ## Scope
 
