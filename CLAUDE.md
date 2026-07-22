@@ -121,7 +121,8 @@ tests/                       validator, normalizer, reviewer
   evaluator will swap the file.
 - Let the LLM make validation, normalization, or review decisions.
 - Require a paid API to run or understand the project — the mock adapter is the
-  default whenever `ANTHROPIC_API_KEY` is absent.
+  default whenever no provider key is set, and `.env.example` ships every key
+  commented out so copying it cannot select a provider by accident.
 - Add a workflow engine, a database, retry/backoff, or auth. Out of scope.
 - Treat `needs_review: true` as a failure. It is a normal outcome; the CLI still
   exits 0.
@@ -129,8 +130,14 @@ tests/                       validator, normalizer, reviewer
 ## Current state
 
 Everything described above is implemented and verified: `main.py` runs
-end-to-end on the mock, 55 tests pass, `ruff check` and `ruff format --check` are
+end-to-end on the mock, 89 tests pass, `ruff check` and `ruff format --check` are
 clean. The three deterministic stages are fully implemented, not stubbed.
+
+Two invariants the tests exist to hold, both learned from bugs that shipped once:
+a quote id is written out as a filename, so `loader.py` rejects anything that is
+not one plain path segment; and a number the normalizer cannot read unambiguously
+stays a string rather than becoming a plausible wrong number, because a finite,
+non-negative price passes every check downstream of it.
 
 `src/llm/mock_adapter.py` is a crude regex stand-in for a model, not a parser to
 build on. It is deliberately imperfect — leaving `"3 weeks"` unresolved, letting
