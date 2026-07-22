@@ -1,0 +1,39 @@
+# Docker does NOT read .gitignore. Without this file the build context — and
+# therefore an image layer — would include .env and the live API key in it, which
+# survives `docker history` even if a later layer deletes the file.
+.env
+.env.*
+!.env.example
+
+# Version control and local tooling
+.git
+.gitignore
+.github
+.pre-commit-config.yaml
+
+# Local environments and build artefacts
+.venv
+venv
+*.egg-info
+build
+dist
+
+# Python caches
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# Pipeline artefacts — regenerated on every run, never shipped
+outputs
+*.jsonl
+review_summary.json
+
+# Not needed at runtime
+tests
+README.md
+CLAUDE.md
+Dockerfile
+docker-compose.yml
+.dockerignore

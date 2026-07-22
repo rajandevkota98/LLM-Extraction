@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from src.config import (
+    DEFAULT_ANTHROPIC_MODEL,
     DEFAULT_OPENROUTER_MODEL,
     PROVIDER_ANTHROPIC,
     PROVIDER_MOCK,
@@ -104,6 +105,33 @@ def test_model_env_var_is_used(monkeypatch):
 def test_model_defaults_when_unset(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API", "sk-or-test")
     assert Settings.from_env().model == DEFAULT_OPENROUTER_MODEL
+
+
+def test_anthropic_ignores_an_openrouter_slug_left_in_model(monkeypatch):
+    """`MODEL` is shared with OpenRouter, whose ids are always 'provider/model'.
+
+    Sending one to the Anthropic API is a guaranteed 404 that surfaces as every
+    quote failing to extract, which reads like a broken pipeline rather than a
+    stale .env line.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setenv("MODEL", "openai/gpt-oss-120b")
+    assert Settings.from_env().model == DEFAULT_ANTHROPIC_MODEL
+
+
+def test_anthropic_still_honours_a_plain_model_name(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setenv("MODEL", "claude-sonnet-5")
+    assert Settings.from_env().model == "claude-sonnet-5"
+
+
+def test_anthropic_model_var_and_cli_override_both_win_over_the_generic_one(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setenv("MODEL", "openai/gpt-oss-120b")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "claude-opus-4-8")
+    assert Settings.from_env().model == "claude-opus-4-8"
+    # An explicit --model is a choice, not a leftover, even when slug-shaped.
+    assert Settings.from_env(model="anthropic/claude-opus-4-8").model == "anthropic/claude-opus-4-8"
 
 
 def test_cli_model_override_wins(monkeypatch):
