@@ -1,0 +1,1 @@
+"""Supplier quote extraction pipeline."""
