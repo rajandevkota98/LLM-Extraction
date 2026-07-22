@@ -8,6 +8,45 @@ from __future__ import annotations
 
 from src.components.reviewer import decide, needs_review
 
+_CLEAN = {
+    "supplier_name": "Beta Metals",
+    "currency": "EUR",
+    "items": [{"description": "Copper coils", "quantity": 12, "unit_price": 73.0}],
+    "quote_expiry": "2026-09-30",
+}
+
+
+def test_a_dropped_expiry_is_a_reason_on_its_own():
+    """Normalization nulls an expiry it cannot read as a date.
+
+    Without this signal the null is indistinguishable from a quote that never
+    stated an expiry, and a hallucinated date would ship as clean.
+    """
+    reasons = decide(
+        {**_CLEAN, "quote_expiry": None}, "Gamma quote.", [], discarded_expiry="sometime in Q3"
+    )
+    assert reasons == [
+        "Quote expiry 'sometime in Q3' could not be read as a calendar date and was left "
+        "unset; confirm the expiry by hand."
+    ]
+    assert needs_review(reasons, []) is True
+
+
+def test_a_quote_that_never_stated_an_expiry_is_not_flagged_for_it():
+    assert decide({**_CLEAN, "quote_expiry": None}, "Gamma quote.", []) == []
+
+
+def test_the_discarded_value_wins_over_the_relative_phrase():
+    """Both describe the same fact; the discard names the text that was dropped."""
+    reasons = decide(
+        {**_CLEAN, "quote_expiry": None},
+        "Quote expires next Friday.",
+        [],
+        discarded_expiry="next Friday",
+    )
+    assert len(reasons) == 1
+    assert "next Friday" in reasons[0]
+
 
 def _clean(**overrides) -> dict:
     payload = {
