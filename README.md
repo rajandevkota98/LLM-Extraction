@@ -31,17 +31,39 @@ Exit code is 0 whenever the pipeline ran. Needing review is a normal outcome, no
 a failure. Non-zero means the input was unreadable (2) or the provider could not
 be reached (3).
 
-### With a real model
+### With a real model (OpenRouter)
 
 ```bash
-.venv/bin/pip install -e ".[llm]"
-cp .env.example .env          # set ANTHROPIC_API_KEY
+.venv/bin/pip install -e ".[openrouter]"
+cp .env.example .env          # set OPENROUTER_API and MODEL
 .venv/bin/python main.py --input quotes.json
 ```
 
-The provider is chosen in `src/config.py`: it selects Anthropic only when a key is
-actually present, and otherwise falls back to the mock, so a clean checkout always
-runs. `--mock` forces the mock even with a key set.
+`.env`:
+
+```ini
+OPENROUTER_API="sk-or-..."
+MODEL="openai/gpt-oss-120b"
+OPENROUTER_SORT=throughput          # optional: throughput | price | latency
+OPENROUTER_SITE_URL=https://...     # optional attribution
+OPENROUTER_APP_NAME=quote-extraction
+```
+
+OpenRouter speaks the OpenAI Chat Completions API, so the adapter drives it with
+the `openai` SDK pointed at `https://openrouter.ai/api/v1`. Anthropic is still
+supported directly — `pip install -e ".[anthropic]"` and set `ANTHROPIC_API_KEY`.
+
+Provider selection lives in `src/config.py` and needs no flags: OpenRouter if
+`OPENROUTER_API` is set, else Anthropic if `ANTHROPIC_API_KEY` is set, else the
+mock. Asking for a provider whose key is missing degrades to the mock rather than
+crashing, so a half-configured `.env` still produces output to look at.
+`--mock` forces the mock even with keys present.
+
+Two model-id guards fail fast with an actionable message instead of a 404:
+
+- a bare name (`gpt-oss-120b`) — OpenRouter ids are always `provider/model`
+- a retired variant suffix (`:nitro`, `:floor`) — routing preference moved to the
+  `provider.sort` field, which is what `OPENROUTER_SORT` sets
 
 ### Optional HTTP interface
 
@@ -130,7 +152,7 @@ one-line change in `reviewer.py`.
 ## Tests
 
 ```bash
-.venv/bin/pytest -q      # 38 tests, no network
+.venv/bin/pytest -q      # 55 tests, no network, no API keys
 ```
 
 Covering the cases a naive implementation gets wrong: `True` passing as a quantity
