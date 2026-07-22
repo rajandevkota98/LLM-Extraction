@@ -77,12 +77,14 @@ def process_quote(quote: QuoteInput, adapter: LLMAdapter) -> PipelineOutcome:
     # both passes and still count.
     validation_errors = validator.validate_payload(normalized)
 
-    repaired = len(raw_errors) - len(validation_errors)
-    if repaired > 0:
-        normalized["assumptions"] = normalized.get("assumptions", []) + [
-            f"Normalization repaired {repaired} schema fault"
-            f"{'s' if repaired != 1 else ''} in the model output."
-        ]
+    # Compare the two error sets, not their sizes. Normalization can repair one
+    # fault and introduce another -- stripping a supplier name of "..." leaves it
+    # empty -- and a count subtraction reports that as "repaired 0", hiding both
+    # halves of what actually happened.
+    normalized["assumptions"] = normalized.get("assumptions", []) + _repair_notes(
+        repaired=[e for e in raw_errors if e not in validation_errors],
+        introduced=[e for e in validation_errors if e not in raw_errors],
+    )
 
     result, build_errors = _build_result(normalized)
     validation_errors.extend(build_errors)
@@ -92,6 +94,7 @@ def process_quote(quote: QuoteInput, adapter: LLMAdapter) -> PipelineOutcome:
         quote.text,
         validation_errors,
         model_flagged=attempt.payload.get("needs_review"),
+        discarded_expiry=_discarded_expiry(attempt.payload, normalized),
     )
     result.needs_review = reviewer.needs_review(reasons, validation_errors)
 
@@ -123,6 +126,34 @@ def _failed_extraction(quote: QuoteInput, raw: str, error: str | None) -> Pipeli
         review_reasons=reasons,
         status="parse_error",
     )
+
+
+def _repair_notes(*, repaired: list[str], introduced: list[str]) -> list[str]:
+    """Say what normalization actually changed, in both directions."""
+    notes: list[str] = []
+    if repaired:
+        notes.append(
+            f"Normalization repaired {len(repaired)} schema fault"
+            f"{'s' if len(repaired) != 1 else ''} in the model output: " + "; ".join(repaired)
+        )
+    if introduced:
+        notes.append(
+            f"Normalization could not produce a usable value for {len(introduced)} field"
+            f"{'s' if len(introduced) != 1 else ''}: " + "; ".join(introduced)
+        )
+    return notes
+
+
+def _discarded_expiry(payload: dict, normalized: dict) -> str | None:
+    """The expiry the model returned, when normalization could not keep it.
+
+    Read structurally rather than parsed back out of an assumption sentence: a
+    string went in, a null came out, so the value was dropped.
+    """
+    raw = payload.get("quote_expiry")
+    if isinstance(raw, str) and raw.strip() and normalized.get("quote_expiry") is None:
+        return raw.strip()
+    return None
 
 
 def _build_result(normalized: dict) -> tuple[ExtractionResult, list[str]]:
