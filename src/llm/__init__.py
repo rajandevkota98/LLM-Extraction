@@ -29,6 +29,7 @@ def get_adapter(settings: Settings) -> LLMAdapter:
             base_url=settings.base_url or "",
             site_url=settings.site_url,
             app_name=settings.app_name,
+            sort=settings.sort,
         )
     if settings.provider == PROVIDER_ANTHROPIC:
         from src.llm.anthropic_adapter import AnthropicAdapter
