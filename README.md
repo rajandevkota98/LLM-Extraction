@@ -119,8 +119,7 @@ fault before it runs and a resolved `GBP` afterwards. Holding the pre-normalizat
 error against the record would flag clean quotes for a problem that no longer
 exists. Faults normalization cannot fix survive both passes and still count.
 
-**Two deliberate refusals.** These are the judgment calls the exercise is really
-about:
+**Two deliberate refusals.** These are the judgment calls that matter most:
 
 - A bare `$` is *not* assumed to be USD. Four currencies use that symbol, so it
   resolves only when the text also names one outright (`Currency USD`, `CAD`, …),
@@ -172,4 +171,4 @@ lead-time phrase overwriting a number the model actually read off the page;
 ## Scope
 
 No workflow engine, database, retry/backoff, or auth. Six stages, one module each,
-kept to what a 60-minute exercise can carry honestly.
+kept to what the problem actually requires.
