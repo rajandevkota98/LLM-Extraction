@@ -18,6 +18,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from src.components.validator import is_iso_date
+
 DAYS_PER_WEEK = 7
 DAYS_PER_MONTH = 30
 
@@ -51,7 +53,15 @@ YEN_CONTEXT = (
     (re.compile(r"\bCNY\b|\bRMB\b|\byuan\b|\brenminbi\b", re.I), "CNY"),
 )
 
-_CODE_IN_TEXT_RE = re.compile(r"\b([A-Z]{3})\b")
+# A three-letter code only counts as a currency when the text uses it as one:
+# next to an amount, or introduced by a word like "prices in". A bare uppercase
+# triple is just as likely to be part of a supplier's address ("ACME SAR OFFICE").
+_CODE_IN_TEXT_RE = re.compile(
+    r"\b(?P<before>[A-Z]{3})\s*\d"
+    r"|\d\s*(?P<after>[A-Z]{3})\b"
+    r"|(?i:\b(?:currency|prices?|priced|quoted|payable|billed|invoiced)\b[^.\n]{0,12}?)"
+    r"\b(?P<named>[A-Z]{3})\b"
+)
 
 # Lead time expressed as a phrase. The approximation marker is captured so we can
 # say in `assumptions` that the number is derived rather than stated.
@@ -63,11 +73,19 @@ LEAD_TIME_RE = re.compile(
     re.I,
 )
 
-# Words that mean a following duration is about the quote's validity, not delivery.
-# The optional filler lets "valid FOR 30 days" match as well as "expires 30 days".
-EXPIRY_CONTEXT_RE = re.compile(
-    r"(?:expir\w*|valid|good\s+(?:through|until)|quote|offer)"
-    r"(?:\s+(?:for|until|through|till|up\s+to|within))?\W*$",
+# Words that mean a following duration is about something other than delivery:
+# the quote's validity ("valid for 30 days"), the payment terms ("Net 30 days"),
+# or a warranty ("warranty 12 months"). Payment terms in particular appear on a
+# large share of real quotes, and reading one as a lead time is silently wrong --
+# an integer lead time passes every downstream check.
+#
+# Only the text *before* the duration is examined. Looking after it would break
+# the common "ships in 3 weeks, payment net 30" ordering, where the trailing
+# payment term has nothing to do with the delivery promise that precedes it.
+NON_DELIVERY_CONTEXT_RE = re.compile(
+    r"(?:expir\w*|valid|good\s+(?:through|until)|quote|offer"
+    r"|nett?|payment|terms|invoiced?|warrant\w*|guarantee\w*)"
+    r"(?:\s+(?:for|until|through|till|up\s+to|within|of|is|are))?\W*$",
     re.I,
 )
 
@@ -178,30 +196,34 @@ def _normalize_currency(value: Any, quote_text: str) -> tuple[Any, str | None]:
     `reviewer.py` can flag it. Assuming `$` means USD is exactly the kind of
     silent invention this pipeline exists to prevent.
     """
-    if isinstance(value, str):
+    if isinstance(value, str) and value.strip():
         text = value.strip()
         if re.fullmatch(r"[A-Za-z]{3}", text):
             return text.upper(), None
 
-        symbol = text or None
-        if symbol in UNAMBIGUOUS_SYMBOLS:
-            code = UNAMBIGUOUS_SYMBOLS[symbol]
-            return code, f"Currency symbol '{symbol}' maps to {code}."
-        if symbol in AMBIGUOUS_SYMBOLS:
-            resolved = _resolve_ambiguous_symbol(symbol, quote_text)
+        if text in UNAMBIGUOUS_SYMBOLS:
+            code = UNAMBIGUOUS_SYMBOLS[text]
+            return code, f"Currency symbol '{text}' maps to {code}."
+        if text in AMBIGUOUS_SYMBOLS:
+            resolved = _resolve_ambiguous_symbol(text, quote_text)
             if resolved:
                 return resolved, (
-                    f"Currency symbol '{symbol}' resolved to {resolved} "
+                    f"Currency symbol '{text}' resolved to {resolved} "
                     "from a currency named in the quote text."
                 )
-            return symbol, None
+            return text, None
+
+        # Something the model read off the page that we cannot resolve. It is kept
+        # so the reviewer can name what was unusable. Replacing it with a code
+        # found elsewhere in the text would assert something the model did not.
+        return text, None
 
     # Nothing usable on the payload -- fall back to a code spelled out in the text.
-    for match in _CODE_IN_TEXT_RE.finditer(quote_text):
-        if match.group(1) in KNOWN_CODES:
-            code = match.group(1)
+    for match in _CODE_IN_TEXT_RE.finditer(quote_text or ""):
+        code = match.group("before") or match.group("after") or match.group("named")
+        if code in KNOWN_CODES:
             return code, f"Currency {code} taken from the quote text."
-    return value if isinstance(value, str) and value.strip() else None, None
+    return None, None
 
 
 def _resolve_ambiguous_symbol(symbol: str, quote_text: str) -> str | None:
@@ -222,6 +244,12 @@ def _normalize_items(value: Any, quote_text: str) -> tuple[Any, list[str]]:
 
     notes: list[str] = []
     phrase = parse_lead_time(quote_text)
+    # A lead time found in the body of the quote belongs to a line only when
+    # there is one line to attribute it to. Spreading a single "around 3 weeks"
+    # across every item invents an association the text never made -- and the
+    # result passes validation, so nothing downstream would catch it.
+    attributable = phrase is not None and sum(isinstance(e, dict) for e in value) == 1
+
     items = []
     for entry in value:
         if not isinstance(entry, dict):
@@ -241,12 +269,22 @@ def _normalize_items(value: Any, quote_text: str) -> tuple[Any, list[str]]:
         item["lead_time_days"] = _to_int(item.get("lead_time_days"))
 
         # Only fill a gap -- never overwrite a number the model read off the page.
-        if item["lead_time_days"] is None and phrase is not None:
+        if item["lead_time_days"] is None and attributable:
             item["lead_time_days"] = phrase.days
             notes.append(
                 f"Lead time {phrase.days} days derived from '{phrase.source}' in the quote text."
             )
         items.append(item)
+
+    if (
+        phrase is not None
+        and not attributable
+        and any(isinstance(i, dict) and i.get("lead_time_days") is None for i in items)
+    ):
+        notes.append(
+            f"The quote text states a lead time of '{phrase.source}', but has more than one "
+            "line item and does not say which it applies to. Lead times were left unset."
+        )
     return items, list(dict.fromkeys(notes))
 
 
@@ -264,12 +302,13 @@ class LeadTime:
 def parse_lead_time(text: str) -> LeadTime | None:
     """Find a lead-time phrase and convert it to days.
 
-    Weeks are x7 and months are x30. Durations attached to the quote's validity
-    ('valid for 30 days') are skipped -- that is an expiry, not a delivery time.
+    Weeks are x7 and months are x30. Durations attached to something other than
+    delivery are skipped: 'valid for 30 days' is an expiry and 'Net 30 days' is a
+    payment term, and neither is a delivery promise.
     """
     for match in LEAD_TIME_RE.finditer(text or ""):
         preceding = text[max(0, match.start() - 24) : match.start()]
-        if EXPIRY_CONTEXT_RE.search(preceding):
+        if NON_DELIVERY_CONTEXT_RE.search(preceding):
             continue
 
         raw_count = match.group("count").lower()
@@ -292,18 +331,24 @@ def parse_lead_time(text: str) -> LeadTime | None:
     return None
 
 
+# One numeric token: digits, optionally broken up by `.` or `,`. Deliberately not
+# a "strip everything that is not a digit" pass -- that turns "12 units @ 5.00"
+# into 125.0 by concatenating two unrelated numbers.
+_NUMBER_TOKEN_RE = re.compile(r"-?\d[\d.,]*\d|-?\d")
+
+
 def _to_int(value: Any) -> Any:
     """Coerce clean integer-ish values; leave anything doubtful for the validator."""
     if isinstance(value, bool) or value is None:
         return None if isinstance(value, bool) else value
     if isinstance(value, int):
         return value
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else value
     if isinstance(value, str):
-        text = value.strip().replace(",", "")
-        if re.fullmatch(r"-?\d+", text):
-            return int(text)
+        number = _to_float(value)
+        if isinstance(number, float) and number.is_integer():
+            return int(number)
     return value
 
 
@@ -313,10 +358,54 @@ def _to_float(value: Any) -> Any:
     if isinstance(value, (int, float)):
         return float(value)
     if isinstance(value, str):
-        text = re.sub(r"[^\d.\-]", "", value.strip().replace(",", ""))
-        if re.fullmatch(r"-?\d+(?:\.\d+)?", text):
-            return float(text)
+        tokens = _NUMBER_TOKEN_RE.findall(value)
+        # Exactly one number, or we do not know which one is the price.
+        if len(tokens) == 1:
+            number = _parse_number(tokens[0])
+            if number is not None:
+                return number
     return value
+
+
+def _parse_number(token: str) -> float | None:
+    """Read one numeric token, resolving `.`/`,` without guessing at a locale.
+
+    Getting this wrong is the worst failure the pipeline has: a mis-read separator
+    produces a finite, non-negative number that passes every validation and review
+    check, so a price wrong by a factor of 1000 is written out as clean.
+
+    Where both separators appear, the last one is the decimal point -- that settles
+    "1.234,56" and "1,234.56" as 1234.56 without knowing the supplier's country.
+    A lone comma groups thousands when exactly three digits follow it ("1,200") and
+    is a decimal point when one or two do ("18,50" is 18.5, not 1850). Repeated
+    separators are grouping. Anything else is genuinely ambiguous and returns None,
+    so the value survives as a string and the validator reports it.
+    """
+    sign = -1.0 if token.startswith("-") else 1.0
+    digits = token.lstrip("-")
+    dot, comma = digits.rfind("."), digits.rfind(",")
+
+    if dot != -1 and comma != -1:
+        split_at = max(dot, comma)
+    elif comma != -1:
+        groups = digits.split(",")
+        trailing = len(groups[-1])
+        if len(groups) > 2 or trailing == 3:
+            split_at = -1
+        elif trailing in (1, 2):
+            split_at = comma
+        else:
+            return None
+    elif dot != -1:
+        split_at = -1 if digits.count(".") > 1 else dot
+    else:
+        split_at = -1
+
+    whole = re.sub(r"[.,]", "", digits if split_at == -1 else digits[:split_at])
+    fraction = "" if split_at == -1 else digits[split_at + 1 :]
+    if not whole.isdigit() or (fraction and not fraction.isdigit()):
+        return None
+    return sign * float(f"{whole}.{fraction or 0}")
 
 
 # --------------------------------------------------------------------------- #
@@ -325,17 +414,38 @@ def _to_float(value: Any) -> Any:
 
 
 def _normalize_expiry(value: Any, quote_text: str) -> tuple[Any, str | None]:
-    """Keep a real ISO date; refuse to resolve a relative one.
+    """Keep a real ISO date; refuse to resolve or keep anything else.
 
     'Next Friday' has no safe answer: the quote's send date is unknown, so any
     date we produced would be fabricated. Detect it, null it, and say why.
+
+    A model that ignores the prompt and answers "next Friday" in this field gets
+    the same treatment. `quote_expiry` is typed as an ISO date or null, and free
+    text sitting in it would be parsed as a date by whatever stores the record.
+    Dropping it is only safe because the drop is named, both in `assumptions` and
+    -- via `reviewer.py` -- as a reason a human has to look at the quote.
     """
+    discarded = None
     if isinstance(value, str) and value.strip():
-        return value.strip(), None
+        text = value.strip()
+        if is_iso_date(text):
+            return text, None
+        discarded = text
 
     relative = RELATIVE_EXPIRY_RE.search(quote_text or "")
-    if relative:
-        phrase = _collapse(relative.group("phrase")).strip(" .,;:")
+    phrase = _collapse(relative.group("phrase")).strip(" .,;:") if relative else None
+
+    if discarded and phrase:
+        return None, (
+            f"Quote expiry '{discarded}' is not a calendar date; the text states it relatively "
+            f"as '{phrase}', which cannot be resolved without the quote's send date. Left unset."
+        )
+    if discarded:
+        return None, (
+            f"Quote expiry '{discarded}' is not a calendar date and could not be resolved "
+            "from the text, so it is left unset."
+        )
+    if phrase:
         return None, (
             f"Quote expiry is stated relatively as '{phrase}'. It cannot be resolved to a "
             "calendar date without the quote's send date, so it is left unset."
