@@ -1,0 +1,20 @@
+# Secrets
+.env
+
+# Pipeline artifacts. `outputs/*` rather than `outputs/`: git cannot re-include a
+# file inside an excluded directory, so the negation below would be dead.
+outputs/*
+!outputs/.gitkeep
+/llm_calls.jsonl
+review_summary.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+venv/
