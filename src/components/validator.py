@@ -157,6 +157,22 @@ def _check_lead_time(where: str, value: Any) -> list[str]:
     return []
 
 
+def is_iso_date(value: str) -> bool:
+    """True when `value` is a real `YYYY-MM-DD` calendar date.
+
+    Shared with `normalizer.py`, which has to answer the same question when it
+    decides whether an expiry is storable. One definition, two callers.
+    """
+    if not ISO_DATE_RE.match(value):
+        return False
+    try:
+        # Pattern alone would accept 2026-02-31.
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
 def _check_expiry(value: Any) -> list[str]:
     if value is None:
         return []
@@ -165,10 +181,7 @@ def _check_expiry(value: Any) -> list[str]:
     text = value.strip()
     if not ISO_DATE_RE.match(text):
         return [f"quote_expiry: '{text}' is not an ISO YYYY-MM-DD date."]
-    try:
-        # Pattern alone would accept 2026-02-31.
-        date.fromisoformat(text)
-    except ValueError:
+    if not is_iso_date(text):
         return [f"quote_expiry: '{text}' is not a real calendar date."]
     return []
 
