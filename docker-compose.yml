@@ -1,0 +1,69 @@
+# Two ways to run the same image:
+#   docker compose up api                     -> HTTP interface on :8000
+#   docker compose run --rm cli               -> one-shot pipeline, writes ./outputs
+#
+# Neither needs an API key. With no .env the app falls back to the offline mock
+# adapter, so a clean checkout works before any credentials exist.
+
+x-common: &common
+  build:
+    context: .
+  image: llm-extraction:local
+  env_file:
+    # required:false so a checkout without a .env still starts, in mock mode.
+    - path: .env
+      required: false
+  environment:
+    # Passed through so `LLM_PROVIDER=mock docker compose ...` forces the offline
+    # path without editing .env.
+    LLM_PROVIDER: ${LLM_PROVIDER:-}
+
+services:
+  api:
+    <<: *common
+    ports:
+      - "8000:8000"
+    # No volumes on purpose: src/api/app.py calls process_quote and returns the
+    # record: it never touches writer.py, so the API writes no files.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).status == 200 else 1)",
+        ]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    restart: unless-stopped
+
+  cli:
+    <<: *common
+    # Behind a profile so `docker compose up` starts only the API. A one-shot
+    # batch job has no business being brought up as a long-running service.
+    profiles: ["cli"]
+    # The only service that writes to a bind mount, so the only one that needs a
+    # uid matching the host — otherwise ./outputs fills with root-owned files.
+    # Non-1000 users: export DOCKER_USER="$(id -u):$(id -g)"
+    user: "${DOCKER_USER:-1000:1000}"
+    volumes:
+      - ./outputs:/app/outputs
+      - ./quotes.json:/app/quotes.json:ro
+    # Every artefact is steered into ./outputs. By default the summary and the
+    # call log land beside main.py in /app, which the host uid cannot write —
+    # one mount for everything beats loosening permissions on the app directory.
+    command:
+      [
+        "python",
+        "main.py",
+        "--input",
+        "quotes.json",
+        "--output-dir",
+        "outputs",
+        "--review-summary",
+        "outputs/review_summary.json",
+        "--call-log",
+        "outputs/llm_calls.jsonl",
+      ]
