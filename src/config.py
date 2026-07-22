@@ -107,10 +107,16 @@ class Settings:
             resolved_model = model or _first_env(*MODEL_VARS) or DEFAULT_OPENROUTER_MODEL
         elif resolved == PROVIDER_ANTHROPIC:
             api_key = anthropic_key
+            # `MODEL` is shared with OpenRouter, whose ids are always
+            # "provider/model". Handing one of those to the Anthropic API is a
+            # guaranteed 404 that surfaces as every quote failing to extract, so a
+            # slug-shaped value is ignored here rather than sent. An explicit
+            # `--model` still wins: that is a choice, not a leftover .env line.
+            generic = _first_env(*MODEL_VARS)
             resolved_model = (
                 model
                 or _first_env("ANTHROPIC_MODEL")
-                or _first_env(*MODEL_VARS)
+                or (generic if generic and "/" not in generic else None)
                 or DEFAULT_ANTHROPIC_MODEL
             )
         else:

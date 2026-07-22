@@ -35,6 +35,16 @@ def extract(adapter: LLMAdapter, quote_id: str, quote_text: str) -> ExtractionAt
         raw = adapter.complete(SYSTEM_PROMPT, user_prompt)
     except LLMError as exc:
         return ExtractionAttempt(raw_response="", payload=None, error=f"LLM call failed: {exc}")
+    except Exception as exc:  # noqa: BLE001 - see below
+        # An adapter is contracted to raise only LLMError, but it wraps third-party
+        # SDK code and this stage is contracted never to raise. A surprise from one
+        # provider must degrade one quote to review, not abandon the run and take
+        # `review_summary.json` with it.
+        return ExtractionAttempt(
+            raw_response="",
+            payload=None,
+            error=f"LLM call raised an unexpected {type(exc).__name__}: {exc}",
+        )
 
     payload, error = parse_response(raw)
     return ExtractionAttempt(raw_response=raw, payload=payload, error=error)
