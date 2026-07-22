@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-extraction"
+version = "0.1.0"
+description = "Extract structured supplier pricing from messy quote text with an LLM, validated in code."
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.7",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+# Optional web wrapper. The CLI runs without any of this installed.
+api = ["fastapi>=0.110", "uvicorn>=0.29"]
+# Real LLM providers. Without one of these the mock adapter is used.
+# OpenRouter speaks the OpenAI Chat Completions API, so it needs the openai SDK.
+openrouter = ["openai>=1.40"]
+anthropic = ["anthropic>=0.40"]
+# Back-compat alias for the original extra name.
+llm = ["anthropic>=0.40"]
+dev = ["pytest>=8.0", "ruff>=0.15", "pre-commit>=4.0"]
+
+[project.scripts]
+llm-extraction = "main:main"
+
+[tool.setuptools]
+packages = ["src", "src.components", "src.llm", "src.api"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+exclude = [".venv", "outputs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# __init__.py files exist to re-export; imported-but-unused is the point.
+"__init__.py" = ["F401"]
+# Tests are allowed loose assertions and long descriptive lines.
+"tests/*" = ["E501"]
